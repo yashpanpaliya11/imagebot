@@ -23,14 +23,28 @@ function App() {
   });
 
   // Recent Context
-  const [recentPrompts, setRecentPrompts] = useState(() => {
-    const saved = localStorage.getItem('recent_prompts');
-    return saved ? JSON.parse(saved) : [];
-  });
+  const [recentMasterpieces, setRecentMasterpieces] = useState([]);
+
+  // Persistence (Prompts only for localStorage, Images for session)
+  useEffect(() => {
+    const savedPrompts = localStorage.getItem('recent_prompts');
+    if (savedPrompts) {
+      const parsed = JSON.parse(savedPrompts);
+      // We start with prompts, images will fill in as the user works
+      setRecentMasterpieces(parsed.map(p => ({ prompt: p, url: null })));
+    }
+  }, []);
 
   // Theme Management
   const [isDarkMode, setIsDarkMode] = useState(() => {
     return localStorage.getItem('theme') === 'dark';
+  });
+
+  const [showOnboarding, setShowOnboarding] = useState(() => {
+    // Only show if no custom token exists AND no system token exists
+    const hasCustom = localStorage.getItem('hf_custom_token')?.startsWith('hf_');
+    const hasSystem = import.meta.env.VITE_HF_API_TOKEN?.startsWith('hf_');
+    return !hasCustom && !hasSystem;
   });
 
   useEffect(() => {
@@ -52,14 +66,19 @@ function App() {
   };
 
   const saveToken = () => {
+    if (customToken && !customToken.startsWith('hf_')) {
+      setError('Invalid token format! Must start with hf_');
+      return;
+    }
     localStorage.setItem('hf_custom_token', customToken);
     setIsSettingsOpen(false);
+    setShowOnboarding(false);
     setError('');
-    showToast('Settings Saved! ✅');
+    showToast(customToken ? 'Token Activated! 🚀' : 'Using Default Token ✅');
   };
 
   const clearHistory = () => {
-    setRecentPrompts([]);
+    setRecentMasterpieces([]);
     localStorage.removeItem('recent_prompts');
     showToast('History Cleared 🗑️');
   };
@@ -91,11 +110,12 @@ function App() {
     setImageUrl(null);
 
     const API_URL = "https://router.huggingface.co/hf-inference/models/stabilityai/stable-diffusion-xl-base-1.0";
-    const API_TOKEN = customToken || import.meta.env.VITE_HF_API_TOKEN;
+    const API_TOKEN = (customToken && customToken.startsWith("hf_")) ? customToken : import.meta.env.VITE_HF_API_TOKEN;
 
     if (!API_TOKEN || !API_TOKEN.startsWith("hf_")) {
-      setError('🛑 TOKEN ERROR: The token in your .env file is either missing or invalid. It must start with hf_!');
+      setError('Please enter token');
       setLoading(false);
+      setShowOnboarding(true);
       return;
     }
 
@@ -137,14 +157,16 @@ function App() {
       const url = URL.createObjectURL(blob);
       setImageUrl(url);
       
-      // Save to Cache for efficiency
       setImageCache(prev => ({ ...prev, [currentPrompt]: url }));
 
-      // Save to recent histories
-      const newHistory = [currentPrompt, ...recentPrompts.filter(p => p !== currentPrompt)].slice(0, 5);
-      setRecentPrompts(newHistory);
-      localStorage.setItem('recent_prompts', JSON.stringify(newHistory));
-      showToast('Generation Success! ✨');
+      // Update Visual History
+      const newMasterpiece = { prompt: currentPrompt, url: url };
+      const filteredHistory = recentMasterpieces.filter(m => m.prompt !== currentPrompt);
+      const newHistory = [newMasterpiece, ...filteredHistory].slice(0, 6);
+      
+      setRecentMasterpieces(newHistory);
+      localStorage.setItem('recent_prompts', JSON.stringify(newHistory.map(m => m.prompt)));
+      showToast('Masterpiece Added to Gallery! 🎨');
 
     } catch (err) {
       console.error(err);
@@ -160,7 +182,11 @@ function App() {
 
   const handleKeyDown = (e) => {
     if (e.key === 'Enter' && !loading && !isSettingsOpen) {
-      generateImage();
+      if (showOnboarding) {
+        saveToken();
+      } else {
+        generateImage();
+      }
     }
   };
 
@@ -179,6 +205,35 @@ function App() {
     navigator.clipboard.writeText(prompt);
     showToast('Prompt Copied! 📋');
   };
+
+  if (showOnboarding) {
+    return (
+      <div className="app-container onboarding">
+        <div className="nav-bar">
+          <h1>Welcome to Image Studio</h1>
+        </div>
+        <div className="settings-panel">
+          <label>Step 1: Activate Your AI Engine</label>
+          <p>This app uses Hugging Face to generate images. Please enter your Read-only API token (starts with hf_) to begin.</p>
+          <input 
+            type="text" 
+            value={customToken}
+            onChange={(e) => setCustomToken(e.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder="hf_..."
+            autoFocus
+          />
+          {error && <div className="error-message" style={{ marginTop: '1rem' }}>{error}</div>}
+          <div style={{ display: 'flex', gap: '1rem', width: '100%', marginTop: '2rem'}}>
+            {import.meta.env.VITE_HF_API_TOKEN?.startsWith('hf_') && (
+              <button className="clear-btn" onClick={() => setShowOnboarding(false)} style={{ flex: 1, padding: '1rem' }}>Use Default</button>
+            )}
+            <button className="primary-btn" onClick={saveToken} style={{ flex: 2 }}>Activate Token</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="app-container">
@@ -277,20 +332,33 @@ function App() {
         )}
       </div>
 
-      {recentPrompts.length > 0 && (
+      {recentMasterpieces.length > 0 && (
         <div className="history-section">
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
-            <h3>Recent Masterpieces</h3>
+            <h3>Gallery of Masterpieces</h3>
             <button className="clear-btn" onClick={clearHistory}>Clear History</button>
           </div>
-          <div className="history-list">
-            {recentPrompts.map((p, i) => (
+          <div className="gallery-grid">
+            {recentMasterpieces.map((master, i) => (
               <div 
                 key={i} 
-                className="history-item" 
-                onClick={() => setPrompt(p)}
+                className="gallery-card" 
+                onClick={() => {
+                  setPrompt(master.prompt);
+                  if (master.url) setImageUrl(master.url);
+                  showToast('Prompt Restored from Gallery');
+                }}
               >
-                {p}
+                {master.url ? (
+                  <img src={master.url} alt={master.prompt} />
+                ) : (
+                  <div className="gallery-card-placeholder">
+                    <span>{master.prompt.substring(0, 20)}...</span>
+                  </div>
+                )}
+                <div className="gallery-card-overlay">
+                  <p>{master.prompt}</p>
+                </div>
               </div>
             ))}
           </div>
